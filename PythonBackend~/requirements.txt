@@ -1,3 +1,7 @@
 numpy>=1.24
 Pillow>=10.0
 opencv-python-headless>=4.9
+
+# Uncomment once a Replicate account + API key exist (Week 1 Sat task) and
+# pipeline/segmentation.py's _segment_via_replicate() is filled in:
+# replicate>=0.25

@@ -30,6 +30,23 @@ namespace AIAssetPipeline
         private string _currentStage  = "Idle";
         private string _statusMessage = "Ready";
 
+        // ---- Video metadata / frame preview state ----
+        private bool  _hasMetadata;
+        private float _videoDuration;
+        private int   _videoWidth  = 16;
+        private int   _videoHeight = 9;
+        private float _previewFrameTime;
+        private Texture2D _previewTexture;
+
+        // ---- Click-to-select state ----
+        private bool  _hasClick;
+        private float _clickX;
+        private float _clickY;
+
+        /// <summary>Which kind of one-shot request is currently in flight / just completed.</summary>
+        private enum RequestMode { None, Pipeline, Metadata, Preview, Segment }
+        private RequestMode _lastRequestMode = RequestMode.None;
+
         // ---- Styles (lazy-init) ----
         private GUIStyle _logStyle;
         private GUIStyle _headerStyle;
@@ -65,6 +82,7 @@ namespace AIAssetPipeline
             PythonBridge.OnLogMessage += HandleLog;
             PythonBridge.OnCompleted  += HandleCompleted;
             PythonBridge.OnError      += HandleError;
+            PythonBridge.OnPreview    += HandlePreview;
         }
 
         private void OnDisable()
@@ -73,6 +91,7 @@ namespace AIAssetPipeline
             PythonBridge.OnLogMessage -= HandleLog;
             PythonBridge.OnCompleted  -= HandleCompleted;
             PythonBridge.OnError      -= HandleError;
+            PythonBridge.OnPreview    -= HandlePreview;
         }
 
         // =================================================================
@@ -125,6 +144,13 @@ namespace AIAssetPipeline
             DrawVideoSection();
             DrawLine();
 
+            // ---- Frame preview + click-to-select ----
+            if (_hasMetadata)
+            {
+                DrawFramePreviewSection();
+                DrawLine();
+            }
+
             // ---- Buttons ----
             DrawButtons();
             DrawLine();
@@ -163,7 +189,11 @@ namespace AIAssetPipeline
                     string path = EditorUtility.OpenFilePanel(
                         "Select Video File", "", "mp4,avi,mov,mkv");
                     if (!string.IsNullOrEmpty(path))
+                    {
                         _videoPath = path;
+                        ResetPreviewState();
+                        RequestMetadata();
+                    }
                 }
 
                 EditorGUI.EndDisabledGroup();
@@ -187,6 +217,88 @@ namespace AIAssetPipeline
             }
 
             EditorGUILayout.Space(4);
+        }
+
+        private void DrawFramePreviewSection()
+        {
+            EditorGUILayout.LabelField("Frame Preview & Click-to-Select", EditorStyles.boldLabel);
+            EditorGUILayout.Space(2);
+
+            EditorGUI.BeginDisabledGroup(PythonBridge.IsRunning);
+
+            EditorGUILayout.BeginHorizontal();
+            {
+                _previewFrameTime = EditorGUILayout.Slider(
+                    "Frame Time (s)", _previewFrameTime, 0f, Mathf.Max(0.01f, _videoDuration));
+
+                if (GUILayout.Button("Load Frame", GUILayout.Width(90)))
+                {
+                    _hasClick = false;
+                    _lastRequestMode = RequestMode.Preview;
+                    _currentStage  = "Loading preview...";
+                    _statusMessage = $"Requesting frame at {_previewFrameTime:F2}s";
+                    PythonBridge.RequestPreviewFrame(_videoPath, _previewFrameTime);
+                }
+            }
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.Space(4);
+
+            if (_previewTexture != null)
+            {
+                float aspect = (float)_videoWidth / _videoHeight;
+                float width  = EditorGUIUtility.currentViewWidth - 24f;
+                float height = width / aspect;
+
+                Rect previewRect = GUILayoutUtility.GetRect(width, height, GUILayout.ExpandWidth(true));
+                GUI.DrawTexture(previewRect, _previewTexture, ScaleMode.ScaleToFit);
+
+                HandlePreviewClick(previewRect);
+
+                if (_hasClick)
+                {
+                    Vector2 markerPos = new Vector2(
+                        previewRect.x + _clickX * previewRect.width,
+                        previewRect.y + _clickY * previewRect.height);
+                    EditorGUI.DrawRect(new Rect(markerPos.x - 4, markerPos.y - 1, 8, 2), Color.red);
+                    EditorGUI.DrawRect(new Rect(markerPos.x - 1, markerPos.y - 4, 2, 8), Color.red);
+                }
+
+                EditorGUILayout.Space(4);
+                EditorGUILayout.HelpBox(
+                    _hasClick
+                        ? $"Click selected at ({_clickX:F2}, {_clickY:F2}). Click the frame again to move it."
+                        : "Click on the frame to select the object to segment.",
+                    MessageType.None);
+
+                EditorGUI.BeginDisabledGroup(!_hasClick);
+                if (GUILayout.Button("Segment At Click"))
+                {
+                    _lastRequestMode = RequestMode.Segment;
+                    _currentStage  = "Segmenting...";
+                    _statusMessage = $"Requesting segmentation at ({_clickX:F2}, {_clickY:F2})";
+                    PythonBridge.RequestSegmentation(_videoPath, _previewFrameTime, _clickX, _clickY);
+                }
+                EditorGUI.EndDisabledGroup();
+            }
+
+            EditorGUI.EndDisabledGroup();
+            EditorGUILayout.Space(4);
+        }
+
+        /// <summary>Detect a mouse click inside the drawn preview rect and store it as a normalized (0-1) coordinate.</summary>
+        private void HandlePreviewClick(Rect previewRect)
+        {
+            Event e = Event.current;
+            if (e.type != EventType.MouseDown || e.button != 0 || !previewRect.Contains(e.mousePosition))
+                return;
+
+            _clickX  = Mathf.Clamp01((e.mousePosition.x - previewRect.x) / previewRect.width);
+            _clickY  = Mathf.Clamp01((e.mousePosition.y - previewRect.y) / previewRect.height);
+            _hasClick = true;
+
+            e.Use();
+            Repaint();
         }
 
         private void DrawButtons()
@@ -283,6 +395,7 @@ namespace AIAssetPipeline
             _progress      = 0f;
             _currentStage  = "Starting\u2026";
             _statusMessage = "Pipeline running\u2026";
+            _lastRequestMode = RequestMode.Pipeline;
 
             string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
             string outputDir = Path.Combine(Application.dataPath, "GeneratedAssets", timestamp);
@@ -295,9 +408,30 @@ namespace AIAssetPipeline
             {
                 VideoPath = _videoPath,
                 OutputDir = outputDir,
-                ClickX    = 0.5f,
-                ClickY    = 0.5f,
+                ClickX    = _hasClick ? _clickX : 0.5f,
+                ClickY    = _hasClick ? _clickY : 0.5f,
             });
+        }
+
+        /// <summary>Fetch fps/dimensions/duration for <see cref="_videoPath"/>, to size the preview slider.</summary>
+        private void RequestMetadata()
+        {
+            if (string.IsNullOrEmpty(_videoPath) || !File.Exists(_videoPath)) return;
+
+            _lastRequestMode = RequestMode.Metadata;
+            _currentStage    = "Reading video info...";
+            _statusMessage   = "Requesting video metadata";
+            PythonBridge.RequestMetadata(_videoPath);
+        }
+
+        /// <summary>Clear preview/click state \u2014 called whenever the selected video changes.</summary>
+        private void ResetPreviewState()
+        {
+            _hasMetadata      = false;
+            _videoDuration    = 0f;
+            _previewFrameTime = 0f;
+            _previewTexture   = null;
+            _hasClick         = false;
         }
 
         // =================================================================
@@ -318,15 +452,93 @@ namespace AIAssetPipeline
 
         private void HandleCompleted(string resultJson)
         {
-            _currentStage  = "Complete";
-            _statusMessage = "Pipeline completed successfully!";
-            _progress      = 1.0f;
+            switch (_lastRequestMode)
+            {
+                case RequestMode.Metadata:
+                    HandleMetadataResult(resultJson);
+                    break;
 
-            AppendLog("\u2705 Pipeline completed successfully!", LogType.Log);
-            AppendLog($"Result: {resultJson}",                 LogType.Log);
+                case RequestMode.Preview:
+                    _currentStage  = "Preview ready";
+                    _statusMessage = "Frame loaded";
+                    AppendLog($"Preview frame loaded: {resultJson}", LogType.Log);
+                    break;
 
-            // Trigger Unity asset import
-            AssetImporter.ImportGeneratedAssets(resultJson);
+                case RequestMode.Segment:
+                    HandleSegmentResult(resultJson);
+                    break;
+
+                case RequestMode.Pipeline:
+                default:
+                    _currentStage  = "Complete";
+                    _statusMessage = "Pipeline completed successfully!";
+                    _progress      = 1.0f;
+                    AppendLog("\u2705 Pipeline completed successfully!", LogType.Log);
+                    AppendLog($"Result: {resultJson}",                 LogType.Log);
+                    // Trigger Unity asset import
+                    AssetImporter.ImportGeneratedAssets(resultJson);
+                    break;
+            }
+        }
+
+        private void HandleMetadataResult(string resultJson)
+        {
+            var meta = JsonUtility.FromJson<VideoMetadataResult>(resultJson);
+            if (meta == null || meta.status != "success")
+            {
+                AppendLog("Failed to read video metadata.", LogType.Warning);
+                return;
+            }
+
+            _hasMetadata      = true;
+            _videoDuration    = meta.duration_sec;
+            _videoWidth       = Mathf.Max(1, meta.width);
+            _videoHeight      = Mathf.Max(1, meta.height);
+            _previewFrameTime = Mathf.Clamp(_previewFrameTime, 0f, _videoDuration);
+
+            _currentStage  = "Idle";
+            _statusMessage = "Video info loaded";
+            AppendLog(
+                $"Video: {meta.width}x{meta.height} @ {meta.fps:F2}fps, " +
+                $"{meta.frame_count} frames, {meta.duration_sec:F1}s",
+                LogType.Log);
+        }
+
+        private void HandleSegmentResult(string resultJson)
+        {
+            var result = JsonUtility.FromJson<SegmentResult>(resultJson);
+            if (result == null || result.status != "success")
+            {
+                AppendLog("Segmentation did not report success.", LogType.Warning);
+                return;
+            }
+
+            _currentStage  = "Segmentation ready";
+            _statusMessage = result.used_real_api
+                ? "Segmented via SAM2 (Replicate)"
+                : "Segmented via local mock (no SAM2 API key set)";
+
+            AppendLog(
+                $"{_statusMessage} \u2014 {result.mask_pixel_count} px masked",
+                LogType.Log);
+        }
+
+        private void HandlePreview(string base64Png)
+        {
+            try
+            {
+                byte[] bytes = Convert.FromBase64String(base64Png);
+                var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                if (tex.LoadImage(bytes))
+                {
+                    _previewTexture = tex;
+                    Repaint();
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"Failed to decode preview image: {ex.Message}", LogType.Warning);
+            }
         }
 
         private void HandleError(string errorMessage)
@@ -362,6 +574,29 @@ namespace AIAssetPipeline
             // aren't part of <color…> / </color> tags.
             // For simplicity, just let it through — Unity handles most cases.
             return text;
+        }
+
+        // =================================================================
+        // JSON DTOs (matching main.py's --mode metadata / --mode segment results)
+        // =================================================================
+
+        [Serializable]
+        private class VideoMetadataResult
+        {
+            public string status;
+            public float  fps;
+            public int    frame_count;
+            public int    width;
+            public int    height;
+            public float  duration_sec;
+        }
+
+        [Serializable]
+        private class SegmentResult
+        {
+            public string status;
+            public bool   used_real_api;
+            public int    mask_pixel_count;
         }
     }
 }

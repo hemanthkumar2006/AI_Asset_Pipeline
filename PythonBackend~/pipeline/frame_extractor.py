@@ -11,6 +11,7 @@ which frames actually matter.
 import os
 
 import cv2
+import numpy as np
 
 
 def get_video_metadata(video_path: str) -> dict:
@@ -116,3 +117,35 @@ def extract_frames(video_path: str, output_dir: str, max_frames: int = 10,
         raise RuntimeError(f"No frames could be decoded from video: {video_path}")
 
     return saved_paths
+
+
+def extract_single_frame(video_path: str, frame_time: float) -> np.ndarray:
+    """
+    Decode a single frame at a given timestamp, for scrubbing/preview.
+
+    Args:
+        video_path: Path to the input video file
+        frame_time: Timestamp in seconds (clamped to the video's duration)
+
+    Returns:
+        BGR numpy array (OpenCV's native format) for the nearest frame
+
+    Raises:
+        FileNotFoundError: video_path does not exist
+        RuntimeError: video could not be opened, or the frame could not be decoded
+    """
+    metadata = get_video_metadata(video_path)
+    clamped_time = max(0.0, min(frame_time, metadata["duration_sec"]))
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video (unsupported/corrupt file?): {video_path}")
+
+    try:
+        cap.set(cv2.CAP_PROP_POS_MSEC, clamped_time * 1000.0)
+        ok, frame = cap.read()
+        if not ok:
+            raise RuntimeError(f"Could not decode frame at {clamped_time:.2f}s: {video_path}")
+        return frame
+    finally:
+        cap.release()

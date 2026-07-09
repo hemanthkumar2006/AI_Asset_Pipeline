@@ -7,12 +7,19 @@ and a placeholder textured cube (.obj + .mtl + texture.png) — those stages
 land in later weeks. This verifies the full IPC round-trip between Unity
 and Python end to end.
 
+Modes (--mode):
+    pipeline  (default) Full mock generation pipeline; writes a dummy cube
+    metadata            Report video fps/frame_count/dimensions/duration
+    preview             Report a single frame (by --frame_time) as a PREVIEW
+    segment             Segment the object at --click_x/--click_y in the
+                        frame at --frame_time; report the mask overlay as
+                        a PREVIEW
+
 Usage:
     python main.py --video_path "path/to/video.mp4" --output_dir "path/to/output"
-
-Optional:
-    --click_x 0.5   Normalized X coordinate of user click (0.0-1.0)
-    --click_y 0.5   Normalized Y coordinate of user click (0.0-1.0)
+    python main.py --video_path "video.mp4" --mode metadata
+    python main.py --video_path "video.mp4" --mode preview --frame_time 3.5
+    python main.py --video_path "video.mp4" --mode segment --frame_time 3.5 --click_x 0.4 --click_y 0.6
 """
 
 import argparse
@@ -28,8 +35,11 @@ if sys.platform == "win32":
 # Ensure we can import the pipeline package regardless of cwd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from pipeline.ipc import report_progress, report_result, report_error, report_log
-from pipeline.frame_extractor import extract_frames, get_video_metadata
+from pipeline.ipc import report_progress, report_result, report_error, report_log, report_preview
+from pipeline.frame_extractor import extract_frames, extract_single_frame, get_video_metadata
+from pipeline.imaging import encode_bgr_to_base64_png
+from pipeline.segmentation import segment_object
+from pipeline.overlay import make_overlay
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +265,46 @@ def run_dummy_pipeline(video_path: str, output_dir: str) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Preview / click-to-select / segmentation modes
+# ---------------------------------------------------------------------------
+
+def run_metadata_mode(video_path: str) -> None:
+    """Report video fps/frame_count/dimensions/duration (for slider ranges etc.)."""
+    metadata = get_video_metadata(video_path)
+    report_result({"status": "success", **metadata})
+
+
+def run_preview_mode(video_path: str, frame_time: float) -> None:
+    """Decode a single frame and send it back as a PREVIEW (base64 PNG)."""
+    frame = extract_single_frame(video_path, frame_time)
+    report_preview(encode_bgr_to_base64_png(frame))
+    report_result({"status": "success", "frame_time": frame_time})
+
+
+def run_segment_mode(video_path: str, frame_time: float, click_x: float, click_y: float) -> None:
+    """
+    Segment the object at (click_x, click_y) in the frame at frame_time,
+    and send back a mask-overlay preview (base64 PNG).
+    """
+    frame = extract_single_frame(video_path, frame_time)
+    mask, used_real_api = segment_object(frame, click_x, click_y)
+
+    report_log(
+        "Segmentation via Replicate SAM2" if used_real_api
+        else "Segmentation via local mock (flood-fill) — set REPLICATE_API_TOKEN for the real call"
+    )
+
+    overlay = make_overlay(frame, mask)
+    report_preview(encode_bgr_to_base64_png(overlay))
+
+    report_result({
+        "status": "success",
+        "used_real_api": used_real_api,
+        "mask_pixel_count": int((mask > 0).sum()),
+    })
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -263,12 +313,21 @@ def main() -> None:
         description="AI 3D Asset Pipeline - Python Backend",
     )
     parser.add_argument(
+        "--mode", type=str, default="pipeline",
+        choices=["pipeline", "metadata", "preview", "segment"],
+        help="Which operation to run (default: pipeline)",
+    )
+    parser.add_argument(
         "--video_path", type=str, required=True,
         help="Path to the input video file",
     )
     parser.add_argument(
-        "--output_dir", type=str, required=True,
-        help="Directory to save generated assets",
+        "--output_dir", type=str, default=None,
+        help="Directory to save generated assets (required for --mode pipeline)",
+    )
+    parser.add_argument(
+        "--frame_time", type=float, default=0.0,
+        help="Timestamp in seconds, for --mode preview / --mode segment",
     )
     parser.add_argument(
         "--click_x", type=float, default=0.5,
@@ -286,9 +345,19 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        run_dummy_pipeline(args.video_path, args.output_dir)
+        if args.mode == "metadata":
+            run_metadata_mode(args.video_path)
+        elif args.mode == "preview":
+            run_preview_mode(args.video_path, args.frame_time)
+        elif args.mode == "segment":
+            run_segment_mode(args.video_path, args.frame_time, args.click_x, args.click_y)
+        else:
+            if not args.output_dir:
+                report_error("--output_dir is required for --mode pipeline")
+                sys.exit(1)
+            run_dummy_pipeline(args.video_path, args.output_dir)
     except Exception as exc:
-        report_error(f"Pipeline failed: {exc}")
+        report_error(f"{args.mode} failed: {exc}")
         sys.exit(1)
 
 

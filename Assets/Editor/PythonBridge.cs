@@ -91,9 +91,52 @@ namespace AIAssetPipeline
         /// </summary>
         public static void StartPipeline(PipelineConfig config)
         {
+            // --- Ensure output dir ---
+            if (!Directory.Exists(config.OutputDir))
+                Directory.CreateDirectory(config.OutputDir);
+
+            string arguments =
+                $"--video_path \"{config.VideoPath}\" " +
+                $"--output_dir \"{config.OutputDir}\" " +
+                $"--click_x {config.ClickX.ToString(System.Globalization.CultureInfo.InvariantCulture)} " +
+                $"--click_y {config.ClickY.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+
+            Run(arguments);
+        }
+
+        /// <summary>Fetch fps/frame_count/dimensions/duration for a video (drives the preview slider range).</summary>
+        public static void RequestMetadata(string videoPath)
+        {
+            Run($"--mode metadata --video_path \"{videoPath}\"");
+        }
+
+        /// <summary>Request a single decoded frame (as a PREVIEW event) at a given timestamp.</summary>
+        public static void RequestPreviewFrame(string videoPath, float frameTime)
+        {
+            string ft = frameTime.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            Run($"--mode preview --video_path \"{videoPath}\" --frame_time {ft}");
+        }
+
+        /// <summary>Request segmentation at a clicked point in the frame at a given timestamp.</summary>
+        public static void RequestSegmentation(string videoPath, float frameTime, float clickX, float clickY)
+        {
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            string arguments =
+                $"--mode segment --video_path \"{videoPath}\" " +
+                $"--frame_time {frameTime.ToString(ci)} " +
+                $"--click_x {clickX.ToString(ci)} --click_y {clickY.ToString(ci)}";
+            Run(arguments);
+        }
+
+        // =====================================================================
+        // Process launch (shared by all request types above)
+        // =====================================================================
+
+        private static void Run(string scriptArguments)
+        {
             if (IsRunning)
             {
-                Debug.LogWarning("[PythonBridge] Pipeline is already running.");
+                Debug.LogWarning("[PythonBridge] A request is already running.");
                 return;
             }
 
@@ -114,17 +157,7 @@ namespace AIAssetPipeline
                 return;
             }
 
-            // --- Ensure output dir ---
-            if (!Directory.Exists(config.OutputDir))
-                Directory.CreateDirectory(config.OutputDir);
-
-            // --- Build command ---
-            string arguments =
-                $"\"{scriptPath}\" " +
-                $"--video_path \"{config.VideoPath}\" " +
-                $"--output_dir \"{config.OutputDir}\" " +
-                $"--click_x {config.ClickX.ToString(System.Globalization.CultureInfo.InvariantCulture)} " +
-                $"--click_y {config.ClickY.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+            string arguments = $"\"{scriptPath}\" " + scriptArguments;
 
             var startInfo = new ProcessStartInfo
             {
