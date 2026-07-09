@@ -38,7 +38,7 @@ Development machine has **no dedicated NVIDIA GPU**, so nothing that requires lo
 - **Local processing** — frame extraction (ffmpeg or Unity VideoPlayer), mesh decimation/cleanup (CPU-only, no GPU dependency)
 
 ## Current status / build plan
-Full week-by-week build plan with daily timings lives in `timed_daily_plan.md` in this repo (or wherever it's saved). Target: MVP fully working and demo-ready by **Sept 2, 2026**. If a milestone is behind schedule, cut scope on nice-to-haves (LOD generation, multi-object selection) before cutting testing/polish time — a reliable simple pipeline beats an ambitious broken one.
+Full week-by-week build plan with daily timings lives in `timed_daily_plan.md` in this repo (or wherever it's saved). What actually got built each day (vs. planned) is logged in `PROGRESS.md`. Target: MVP fully working and demo-ready by **Sept 2, 2026**. If a milestone is behind schedule, cut scope on nice-to-haves (LOD generation, multi-object selection) before cutting testing/polish time — a reliable simple pipeline beats an ambitious broken one.
 
 ## Explicitly out of scope for MVP (backlog, not now)
 - Multi-object selection in a single pass
