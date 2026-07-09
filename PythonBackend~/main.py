@@ -1,9 +1,11 @@
 """
 AI 3D Asset Pipeline - Python Backend Entry Point
 
-Week 1: Dummy pipeline that simulates five processing stages and generates
-a placeholder textured cube as .obj + .mtl + texture.png, verifying the
-full IPC round-trip between Unity and Python.
+Frame extraction is real (OpenCV, uniform sampling). Segmentation, 3D
+reconstruction, and mesh processing are still simulated with time.sleep
+and a placeholder textured cube (.obj + .mtl + texture.png) — those stages
+land in later weeks. This verifies the full IPC round-trip between Unity
+and Python end to end.
 
 Usage:
     python main.py --video_path "path/to/video.mp4" --output_dir "path/to/output"
@@ -27,6 +29,7 @@ if sys.platform == "win32":
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pipeline.ipc import report_progress, report_result, report_error, report_log
+from pipeline.frame_extractor import extract_frames, get_video_metadata
 
 
 # ---------------------------------------------------------------------------
@@ -163,18 +166,42 @@ f 5/1/6 6/2/6 2/3/6 1/4/6
 # ---------------------------------------------------------------------------
 
 STAGES = [
-    ("Frame Extraction",    "Extracting keyframes from video...",              0.8),
+    ("Frame Extraction",    "Extracting keyframes from video...",              None),
     ("Segmentation",        "Segmenting target object in frames...",           1.0),
     ("3D Reconstruction",   "Reconstructing 3D mesh from segmented frames...", 1.2),
     ("Mesh Processing",     "Optimising mesh topology and UV mapping...",      0.8),
     ("Export",              "Generating final OBJ / MTL / texture files...",   0.5),
 ]
 
+MAX_EXTRACTED_FRAMES = 10
 
-def run_dummy_pipeline(video_path: str, output_dir: str) -> None:
+
+def run_frame_extraction_stage(video_path: str, output_dir: str, base: float, span: float) -> list:
+    """Real frame extraction (stage 0), reported into the [base, base+span] progress range."""
+    metadata = get_video_metadata(video_path)
+    report_log(
+        f"Video: {metadata['width']}x{metadata['height']} @ {metadata['fps']:.2f}fps, "
+        f"{metadata['frame_count']} frames, {metadata['duration_sec']:.1f}s"
+    )
+
+    def on_frame_saved(done: int, total: int) -> None:
+        frac = base + (done / total) * span
+        report_progress(frac, "Frame Extraction", f"Extracted frame {done}/{total}")
+
+    frame_paths = extract_frames(
+        video_path, output_dir, max_frames=MAX_EXTRACTED_FRAMES, progress_callback=on_frame_saved
+    )
+    report_log(f"[OK] Frame Extraction complete - {len(frame_paths)} frames saved")
+    return frame_paths
+
+
+def run_dummy_pipeline(video_path: str, output_dir: str) -> list:
     """
-    Simulate five pipeline stages with ``time.sleep``, then generate
-    a dummy textured cube (.obj + .mtl + texture.png).
+    Run real frame extraction, then simulate the remaining pipeline stages
+    with ``time.sleep`` and generate a dummy textured cube (.obj + .mtl +
+    texture.png) so the full IPC round-trip can be verified end to end.
+
+    Returns the list of extracted frame paths.
     """
     report_log(f"Pipeline started - video: {video_path}")
     report_log(f"Output directory: {output_dir}")
@@ -182,11 +209,16 @@ def run_dummy_pipeline(video_path: str, output_dir: str) -> None:
     os.makedirs(output_dir, exist_ok=True)
 
     total = len(STAGES)
+    extracted_frames = []
 
     for i, (name, msg, duration) in enumerate(STAGES):
         base = i / total
         report_progress(base, name, f"Starting {name}...")
         report_log(msg)
+
+        if name == "Frame Extraction":
+            extracted_frames = run_frame_extraction_stage(video_path, output_dir, base, 1.0 / total)
+            continue
 
         steps = 5
         for step in range(steps):
@@ -215,8 +247,11 @@ def run_dummy_pipeline(video_path: str, output_dir: str) -> None:
             "mtl_path": os.path.abspath(mtl_path),
             "texture_path": os.path.abspath(texture_path),
             "output_dir": os.path.abspath(output_dir),
+            "extracted_frames": extracted_frames,
         }
     )
+
+    return extracted_frames
 
 
 # ---------------------------------------------------------------------------
@@ -246,10 +281,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Week 1 doesn't actually read the video — just warn if missing
     if not os.path.exists(args.video_path):
-        report_log(f"Warning: Video file not found: {args.video_path}")
-        report_log("Week 1 dummy pipeline will proceed anyway.")
+        report_error(f"Video file not found: {args.video_path}")
+        sys.exit(1)
 
     try:
         run_dummy_pipeline(args.video_path, args.output_dir)
